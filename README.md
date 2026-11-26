@@ -58,6 +58,29 @@ curl -X POST http://localhost:3000/api/admin/accounts \
 
 ถ้าอยากให้ Discord ยังได้ข้อความด้วย ให้ macro ยิง 2 ที่ หรือเพิ่ม relay ใน `server.js`
 
+### Capy's AA Macro (v7.4) — รองรับแล้ว
+macro นี้ส่ง "Capybara Session Report" ซึ่งเป็น **ยอดสะสมทั้ง session** (Wins / Losses, Summer Pearls (Session))
+ระบบจะเทียบกับรายงานครั้งก่อนเพื่อหาผลรายแมตช์ให้เอง:
+- Wins เพิ่ม 1 = ชนะ 1 แมตช์, Losses เพิ่ม 1 = แพ้
+- ของที่ได้ = ค่า `(Session)` ที่เพิ่มขึ้น (เช่น Summer Pearls 26212 → 34255 = ได้ 8043)
+- เวลาต่อแมตช์ = Session Time ที่เพิ่มขึ้น (รวมเวลาโหลด lobby)
+- ถ้า Session Time / Wins ลดลง = macro เริ่ม session ใหม่
+- รูป screenshot ที่ macro แนบมา เก็บไว้และแสดงเป็นรูปของแมตช์
+
+ข้อจำกัด: ของที่อยู่แค่ในรูป (เช่น Sky Portal ที่ดรอป) ระบบยังอ่านจากรูปไม่ได้
+
+### ส่งต่อไป Discord เหมือนเดิม (relay)
+ตั้ง Discord webhook เดิมให้บัญชี แล้วทุกข้อความ (รวมรูป) จะถูกส่งต่อไป Discord ด้วย:
+
+```powershell
+Invoke-RestMethod -Method Patch -Uri http://localhost:3000/api/admin/accounts/<id> -Headers @{ "x-admin-key" = $env:ADMIN_KEY } -ContentType "application/json" -Body '{"discord_relay_url":"https://discord.com/api/webhooks/..."}'
+```
+
+### ดูข้อความดิบที่ macro ส่งมา (ไว้ debug)
+```powershell
+Invoke-RestMethod -Uri "http://localhost:3000/api/admin/accounts/<id>/raw?limit=3" -Headers @{ "x-admin-key" = $env:ADMIN_KEY } | ConvertTo-Json -Depth 20
+```
+
 ### แบบที่ 2: Native JSON (แนะนำ ถ้าคุณเขียน macro เอง แม่นกว่า)
 `POST https://เว็บคุณ/api/ingest/<token>`
 

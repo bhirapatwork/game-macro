@@ -18,7 +18,7 @@ function parseNumber(str) {
 function cleanText(s) {
   return String(s || '')
     .replace(/<a?:\w+:\d+>/g, '')          // custom discord emoji
-    .replace(/:[a-z0-9_+-]+:/gi, '')        // :emoji:
+    .replace(/:[a-z0-9_+-]*[a-z][a-z0-9_+-]*:/gi, '') // :emoji: (ต้องมีตัวอักษร ไม่งั้นจะลบเวลา 01:40:41)
     .replace(/[*_`~|>]/g, '')               // markdown
     .replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}]/gu, '') // unicode emoji
     .replace(/\s+/g, ' ')
@@ -206,9 +206,52 @@ function normalizeNative(p) {
   return out;
 }
 
+// ---------- Capy's AA Macro: "Capybara Session Report" ----------
+// ข้อมูลเป็นยอดสะสมทั้ง session (Wins / Losses 2 / 2, Summer Pearls (Session) 26212)
+// parser ส่งออกเป็น snapshot แล้ว service จะเอาไปลบกับ snapshot ก่อนหน้า -> ได้ผลรายแมตช์
+function isCapySession(payload) {
+  return (payload.embeds || []).some((e) =>
+    /capybara session report|capy'?s aa macro/i.test(e.footer?.text || '') ||
+    (e.fields || []).some((f) => /^wins?\s*\/\s*loss(es)?$/i.test(cleanText(f.name))));
+}
+
+const pair = (v) => { const m = cleanText(v).match(/(\d[\d,]*)\s*\/\s*(\d[\d,]*)/); return m ? [parseNumber(m[1]), parseNumber(m[2])] : null; };
+
+function parseCapySession(payload) {
+  const e = (payload.embeds || []).find((x) => (x.fields || []).length) || (payload.embeds || [])[0] || {};
+  const out = { type: 'session_report', player: {}, match: {}, session: { counters: {} }, rewards: [], inventory: null };
+  let key;
+  const title = cleanText(e.title);
+  if (title) out.match.mode = title.replace(/\s*rewards?$/i, '') || null;
+  for (const f of e.fields || []) {
+    const name = cleanText(f.name).replace(/[:：]$/, '');
+    const val = cleanText(f.value);
+    let m;
+    if (/^map$/i.test(name)) out.match.map = val;
+    else if (/^mode$/i.test(name)) out.match.mode = val;
+    else if (/^wins?\s*\/\s*loss(es)?$/i.test(name)) { const p = pair(val); if (p) [out.session.wins, out.session.losses] = p; }
+    else if (/^mode\s*w\/?l$/i.test(name)) { const p = pair(val); if (p) [out.session.mode_wins, out.session.mode_losses] = p; }
+    else if (/^challenge\s*w\/?l$/i.test(name)) { const p = pair(val); if (p) [out.session.ch_wins, out.session.ch_losses] = p; }
+    else if (/^session time$/i.test(name)) out.session.session_sec = parseDuration(val);
+    else if (/^total time$/i.test(name)) out.session.total_sec = parseDuration(val);
+    else if ((m = name.match(/^(.+?)\s*\(session\)$/i)) && parseNumber(val.replace(/\s/g, '')) != null) {
+      out.session.counters[normalizeItemName(m[1])] = parseNumber(val.replace(/\s/g, ''));
+    } else if ((key = canonicalKey(name))) applyField(out, key, f.value);
+  }
+  // ข้อความอื่นที่อาจมีรายการของ (เผื่อเวอร์ชันอื่นของ macro)
+  if (e.description) out.rewards.push(...parseItemBlock(e.description));
+  out.rewards = mergeItems(out.rewards);
+  return out;
+}
+
 function parsePayload(payload) {
   if (!payload || typeof payload !== 'object') return null;
   if (payload.type || payload.match || payload.rewards) return normalizeNative(payload);
+  if (isCapySession(payload)) {
+    const ev = parseCapySession(payload);
+    if (ev.session.wins != null || Object.keys(ev.session.counters).length) return ev;
+    return null; // ข้อความที่มีแต่รูป (เช่นรูป VICTORY) — เก็บรูปอย่างเดียว
+  }
   if (payload.embeds || payload.content) return parseDiscord(payload);
   return null;
 }

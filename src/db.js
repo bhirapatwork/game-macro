@@ -77,7 +77,22 @@ CREATE TABLE IF NOT EXISTS raw_events (
   body       TEXT NOT NULL,
   parsed     INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS shots (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  ts         INTEGER NOT NULL,
+  file       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_shots_acc_ts ON shots(account_id, ts);
 `);
+
+// migration แบบง่าย: เพิ่ม column ถ้ายังไม่มี (DB เก่าจะได้ไม่พัง)
+function addColumn(table, col, def) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+  if (!cols.includes(col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`);
+}
+addColumn('accounts', 'session_state', 'TEXT');       // snapshot ล่าสุดของ Capy session report
+addColumn('accounts', 'discord_relay_url', 'TEXT');   // ส่งต่อข้อความไป Discord เดิม
 
 function tx(fn) {
   db.exec('BEGIN');

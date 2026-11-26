@@ -17,16 +17,16 @@ function createAccount(o = {}) {
   const now = Date.now();
   const acc = { id: rid(12), token: rid(24) };
   db.prepare(`INSERT INTO accounts (id, token, roblox_name, roblox_user_id, game, machine, job_title, job_type,
-      job_target, job_item, job_start_ts, status, created_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      job_target, job_item, job_start_ts, status, created_at, discord_relay_url)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
     acc.id, acc.token, o.roblox_name ?? null, o.roblox_user_id ?? null, o.game || 'Anime Adventures',
     o.machine ?? null, o.job_title ?? null, o.job_type || 'none', o.job_target ?? null, o.job_item ?? null,
-    o.job_start_ts ?? now, o.status || 'queued', now,
+    o.job_start_ts ?? now, o.status || 'queued', now, o.discord_relay_url ?? null,
   );
   return getAccountRow(acc.id);
 }
 
-const UPDATABLE = ['roblox_name', 'roblox_user_id', 'game', 'machine', 'job_title', 'job_type', 'job_target', 'job_item', 'job_start_ts', 'status'];
+const UPDATABLE = ['roblox_name', 'roblox_user_id', 'game', 'machine', 'job_title', 'job_type', 'job_target', 'job_item', 'job_start_ts', 'status', 'discord_relay_url'];
 function updateAccount(id, o) {
   const keys = Object.keys(o).filter((k) => UPDATABLE.includes(k));
   if (!keys.length) return getAccountRow(id);
@@ -115,9 +115,13 @@ function accountMatches(id, limit = 50) {
   const total = db.prepare('SELECT COUNT(*) c FROM matches WHERE account_id=?').get(id).c;
   const rows = db.prepare('SELECT * FROM matches WHERE account_id=? ORDER BY ts DESC LIMIT ?').all(id, limit);
   const rewardStmt = db.prepare('SELECT item, qty FROM match_rewards WHERE match_id=? ORDER BY rowid');
+  const shotStmt = db.prepare('SELECT file FROM shots WHERE account_id=? AND ts BETWEEN ? AND ? ORDER BY ts');
   return {
     total,
-    items: rows.map((m) => ({ ...m, team: m.team ? JSON.parse(m.team) : null, rewards: rewardStmt.all(m.id) })),
+    items: rows.map((m) => ({
+      ...m, team: m.team ? JSON.parse(m.team) : null, rewards: rewardStmt.all(m.id),
+      shots: shotStmt.all(id, m.ts - 180e3, m.ts + 60e3).map((r) => `/shots/${r.file}`),
+    })),
   };
 }
 
@@ -135,14 +139,53 @@ function accountPurchases(id) {
 }
 
 // ---------- ingest ----------
-function ingest(account, body) {
+function insertMatch(accountId, ts, m, rewards) {
+  const id = Number(db.prepare(`INSERT INTO matches (account_id, ts, mode, map, difficulty, tier, act, wave, duration_sec, result, modifier, portal_owner, team)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    accountId, ts, m.mode ?? null, m.map ?? null, m.difficulty ?? null, m.tier ?? null, m.act ?? null,
+    m.wave ?? null, m.duration_sec ?? null, m.result ?? null, m.modifier ?? null, m.portal_owner ?? null,
+    m.team ? JSON.stringify(m.team) : null,
+  ).lastInsertRowid);
+  const ins = db.prepare('INSERT INTO match_rewards (match_id, account_id, item, qty) VALUES (?,?,?,?)');
+  for (const r of rewards || []) if (r.qty > 0) ins.run(id, accountId, r.name, r.qty);
+  return id;
+}
+
+// Capy session report = ยอดสะสม -> เทียบกับ snapshot ก่อนหน้าเพื่อหาว่าแมตช์ล่าสุดได้อะไร
+function applySessionReport(account, ev, now) {
+  const cur = { wins: 0, losses: 0, session_sec: 0, ...ev.session, counters: ev.session.counters || {} };
+  const prev = account.session_state ? JSON.parse(account.session_state) : null;
+  const reset = !prev || cur.session_sec < prev.session_sec || cur.wins < prev.wins || cur.losses < prev.losses;
+  const base = reset ? { wins: 0, losses: 0, session_sec: 0, counters: {} } : prev;
+  db.prepare('UPDATE accounts SET session_state=?, in_match=0 WHERE id=?').run(JSON.stringify(cur), account.id);
+
+  const dw = cur.wins - base.wins, dl = cur.losses - base.losses;
+  if (dw + dl <= 0) return null; // ไม่มีแมตช์ใหม่ (ส่งซ้ำ)
+
+  const rewards = Object.entries(cur.counters)
+    .map(([name, v]) => ({ name, qty: v - (base.counters[name] || 0) }))
+    .concat(ev.rewards || []);
+  const games = dw + dl;
+  const m = {
+    ...ev.match,
+    result: dl === 0 ? 'win' : dw === 0 ? 'lose' : null,
+    // เวลาโดยประมาณ = เวลา session ที่เพิ่มขึ้น / จำนวนแมตช์ (รวมเวลาโหลดใน lobby)
+    duration_sec: cur.session_sec ? Math.round((cur.session_sec - base.session_sec) / games) : null,
+    modifier: games > 1 ? `รวม ${games} แมตช์ (ชนะ ${dw} แพ้ ${dl})` : ev.match.modifier,
+  };
+  return insertMatch(account.id, now, m, rewards);
+}
+
+function ingest(account, body, shots = []) {
   const now = Date.now();
   const ev = parsePayload(body);
   db.prepare('INSERT INTO raw_events (account_id, ts, body, parsed) VALUES (?,?,?,?)')
     .run(account.id, now, JSON.stringify(body).slice(0, 100_000), ev ? 1 : 0);
 
   db.prepare('UPDATE accounts SET last_seen=? WHERE id=?').run(now, account.id);
-  if (!ev) return { ok: true, parsed: false };
+  const insShot = db.prepare('INSERT INTO shots (account_id, ts, file) VALUES (?,?,?)');
+  for (const f of shots) insShot.run(account.id, now, f);
+  if (!ev) return { ok: true, parsed: false, shots: shots.length };
 
   const p = ev.player || {};
   db.prepare(`UPDATE accounts SET
@@ -160,17 +203,13 @@ function ingest(account, body) {
       case 'match_end': {
         const m = ev.match || {};
         const ts = m.ended_at ? Date.parse(m.ended_at) || now : now;
-        matchId = Number(db.prepare(`INSERT INTO matches (account_id, ts, mode, map, difficulty, tier, act, wave, duration_sec, result, modifier, portal_owner, team)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
-          account.id, ts, m.mode ?? null, m.map ?? null, m.difficulty ?? null, m.tier ?? null, m.act ?? null,
-          m.wave ?? null, m.duration_sec ?? null, m.result ?? null, m.modifier ?? null, m.portal_owner ?? null,
-          m.team ? JSON.stringify(m.team) : null,
-        ).lastInsertRowid);
-        const ins = db.prepare('INSERT INTO match_rewards (match_id, account_id, item, qty) VALUES (?,?,?,?)');
-        for (const r of ev.rewards || []) ins.run(matchId, account.id, r.name, r.qty);
+        matchId = insertMatch(account.id, ts, m, ev.rewards);
         db.prepare('UPDATE accounts SET in_match=0 WHERE id=?').run(account.id);
         break;
       }
+      case 'session_report':
+        matchId = applySessionReport(account, ev, now);
+        break;
       case 'shop_purchase': {
         const b = ev.purchase || {};
         db.prepare(`INSERT INTO purchases (account_id, ts, shop, item, price, currency, qty, balance_after) VALUES (?,?,?,?,?,?,?,?)`)
@@ -197,7 +236,10 @@ function ingest(account, body) {
   });
 }
 
+const rawEvents = (id, limit = 5) => db.prepare('SELECT ts, parsed, body FROM raw_events WHERE account_id=? ORDER BY id DESC LIMIT ?')
+  .all(id, limit).map((r) => ({ ...r, body: JSON.parse(r.body) }));
+
 module.exports = {
-  createAccount, updateAccount, getAccountRow, getAccountByToken, publicAccount, listAccounts, overview,
+  rawEvents, createAccount, updateAccount, getAccountRow, getAccountByToken, publicAccount, listAccounts, overview,
   accountMatches, accountItems, accountInventory, accountPurchases, ingest, mask,
 };

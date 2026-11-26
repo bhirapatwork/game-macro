@@ -186,7 +186,9 @@
         <div class="section-sub"><b>${matches.items.length}</b> แมตช์ล่าสุด${matches.total > matches.items.length ? ` จากทั้งหมด ${fmt(matches.total)}` : ''} · ${clock(first.ts)} – ${clock(last.ts)}</div>
         <div class="list">${matches.items.map((m) => `
           <div class="mrow">
-            <div class="thumb ${/portal/i.test(m.mode || '') ? 'portal' : ''}" style="${thumbBg(m.map)}">${esc(m.mode || '')}</div>
+            ${m.shots && m.shots.length
+              ? `<a class="thumb shot ${/portal/i.test(m.mode || '') ? 'portal' : ''}" href="${esc(m.shots[m.shots.length - 1])}" target="_blank" rel="noopener" style="background-image:linear-gradient(180deg,transparent 55%,#000b),url('${esc(m.shots[m.shots.length - 1])}')">${esc(m.mode || '')}${m.shots.length > 1 ? ` · ${m.shots.length} รูป` : ''}</a>`
+              : `<div class="thumb ${/portal/i.test(m.mode || '') ? 'portal' : ''}" style="${thumbBg(m.map)}">${esc(m.mode || '')}</div>`}
             <div>
               <div class="title">${m.result === 'win' ? '<span class="w">ชนะ</span>' : m.result === 'lose' ? '<span class="l">แพ้</span>' : ''}${esc(m.map || 'ไม่ทราบด่าน')}</div>
               <div class="meta">${[m.difficulty && esc(m.difficulty), m.tier && `<span class="tier">Tier ${m.tier}</span>`, m.wave != null && `เวฟ ${m.wave}`, m.duration_sec && mmss(m.duration_sec), m.modifier && esc(m.modifier), m.portal_owner === 'self' ? '<b>ประตูของคุณ</b>' : m.portal_owner === 'party' ? 'ประตูของเพื่อนร่วมตี้' : ''].filter(Boolean).join(' · ')}</div>
