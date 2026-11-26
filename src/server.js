@@ -87,7 +87,7 @@ const RELAY_RE = /^https:\/\/(?:(?:ptb|canary)\.)?discord(?:app)?\.com\/api\/web
 function relayToDiscord(url, req, buf) {
   if (!url || !RELAY_RE.test(url)) return;
   fetch(url, { method: 'POST', headers: { 'content-type': req.headers['content-type'] || 'application/json' }, body: buf })
-    .then((r) => { if (!r.ok) console.warn('[relay] discord ตอบ', r.status); })
+    .then(async (r) => { if (!r.ok) console.warn('[relay] discord ตอบ', r.status, (await r.text()).slice(0, 200)); })
     .catch((e) => console.warn('[relay] ส่งไม่สำเร็จ', e.message));
 }
 
@@ -126,11 +126,13 @@ async function handle(req, res) {
   // หรือแบบตรง: https://<your-site>/api/ingest/<token>
   if (req.method === 'POST' && ((m = p.match(/^\/api\/ingest\/([a-f0-9]{48})$/)) || (m = p.match(/^\/api\/webhooks\/[^/]+\/([a-f0-9]{48})$/)))) {
     const acc = svc.getAccountByToken(m[1]);
-    if (!acc) return send(res, 404, { error: 'unknown token' });
+    const stamp = new Date().toLocaleTimeString();
+    if (!acc) { console.log(`[${stamp}] webhook: token ไม่ถูกต้อง (${m[1].slice(0, 6)}...) — เช็คลิงก์ใน macro`); return send(res, 404, { error: 'unknown token' }); }
     let buf, decoded;
-    try { buf = await readBody(req); decoded = decodeBody(req, buf); } catch { return send(res, 400, { error: 'invalid body' }); }
+    try { buf = await readBody(req); decoded = decodeBody(req, buf); } catch (e) { console.log(`[${stamp}] webhook: อ่าน body ไม่ได้ (${req.headers['content-type']}) ${e.message}`); return send(res, 400, { error: 'invalid body' }); }
     relayToDiscord(acc.discord_relay_url, req, buf);
     const r = svc.ingest(acc, decoded.body, saveShots(decoded.files));
+    console.log(`[${stamp}] webhook ${acc.roblox_name || acc.id}: ${r.parsed ? `อ่านได้ (${r.type}${r.match_id ? `, บันทึกแมตช์ #${r.match_id}` : ', ไม่มีแมตช์ใหม่'})` : 'อ่านไม่ออก (เก็บข้อมูลดิบไว้แล้ว)'}${r.shots || decoded.files.length ? `, รูป ${decoded.files.length}` : ''}${acc.discord_relay_url ? ', ส่งต่อ Discord' : ''}`);
     // Discord ตอบ 204 — macro บางตัวเช็คแบบนั้น
     return url.searchParams.get('wait') === 'true' ? send(res, 200, r) : (res.writeHead(204), res.end());
   }
